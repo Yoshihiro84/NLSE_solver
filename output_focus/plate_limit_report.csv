@@ -1,0 +1,2 @@
+plate_idx,z_start_mm,z_end_mm,B_i_rad,B_status,I_peak_Wcm2,z_at_I_peak_mm,I_status,B_warn_rad,B_limit_rad,I_damage_Wcm2,safety_factor,I_allow_Wcm2
+1,8.0,13.0,2.6246977646628143e48,VIOLATION,1.3367475947786726e61,8.004999999999999,VIOLATION,4.71238898038469,6.283185307179586,2.0e11,1.5,1.3333333333333333e11

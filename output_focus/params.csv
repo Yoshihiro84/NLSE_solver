@@ -1,0 +1,10 @@
+key,value
+mode,verification
+dispersion_phase_sign,exp(+i*((beta2/2)*w^2 + (beta3/6)*w^3)*dz)
+B_spm,4.969631921067743e83
+B_ss,4.1170527844663784e12
+tau_fwhm_fs,100.0
+T_window_fs,2000.0
+N,16384
+lambda0_um,4.8
+f0_THz,62.45676208333334
