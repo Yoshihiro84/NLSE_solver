@@ -2,7 +2,7 @@
 module Beam
 
 export AbstractBeam, BeamProfile, KnifeEdgeGaussian, constant_beam,
-       knifeedge_beam, A_eff, wx, wy
+       knifeedge_beam, A_eff, wx, wy, initial_q
 
 """
 Abstract beam interface.
@@ -96,6 +96,18 @@ function knifeedge_beam(;
     w0x = (waist_is_diameter ? 0.5*w0x_mm : w0x_mm) * 1e-3
     w0y = (waist_is_diameter ? 0.5*w0y_mm : w0y_mm) * 1e-3
     return KnifeEdgeGaussian(w0x, w0y, z0x_mm, z0y_mm, zRx_mm, zRy_mm)
+end
+
+"""
+Compute initial q-parameters from a KnifeEdgeGaussian beam at position z_mm.
+
+    q(z) = (z - z0) + i*zR   (all in metres)
+"""
+function initial_q(beam::KnifeEdgeGaussian, z_mm::Float64)
+    z_m = z_mm * 1e-3
+    qx = ComplexF64(z_m - beam.z0x_mm * 1e-3, beam.zRx_mm * 1e-3)
+    qy = ComplexF64(z_m - beam.z0y_mm * 1e-3, beam.zRy_mm * 1e-3)
+    return qx, qy
 end
 
 end # module

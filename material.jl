@@ -1,6 +1,6 @@
 module Material
 
-export MaterialModel, caF2_46um, Si_48um, NaCl_48um
+export MaterialModel, CaF2_48um, Si_48um, NaCl_48um
 
 """
 材料モデル
@@ -21,7 +21,7 @@ n_Si_simple(λ::Float64) = 3.43
 n_CaF2_simple(λ::Float64) = 1.43
 
 # 4.6 µm 付近の材料モデル
-const caF2_46um = MaterialModel("CaF2_4.6um", n_CaF2_simple,2e-20)
+const CaF2_48um = MaterialModel("CaF2_4.8um", n_CaF2_simple, 0.0)
 const Si_48um = MaterialModel("Si_4.8um", n_Si_simple, 3e-18)
 const NaCl_48um = MaterialModel("NaCl_4.8um", n_NaCl_simple, 5e-20)
 

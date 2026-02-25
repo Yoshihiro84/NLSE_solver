@@ -2,8 +2,8 @@ key,value
 beam_mode,constant
 enable_spm,true
 enable_self_steepening,true
-B_total_rad,2.6246977646628143e48
-B_total_from_compute_B_rad,2.6246977646628143e48
+B_total_rad,6.648933888471164
+B_total_from_compute_B_rad,6.648933888471164
 B_warn_per_plate_rad,4.71238898038469
 B_limit_per_plate_rad,6.283185307179586
 I_damage_Wcm2_per_plate,"2.0e11"

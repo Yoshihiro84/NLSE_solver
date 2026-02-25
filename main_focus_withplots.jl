@@ -24,19 +24,20 @@ using .Plates
 using .NLSESolver
 
 # ===============================
-# User parameters (edit here)
+# Load shared config
 # ===============================
+include("config.jl")
 
-λ0 = 4.8e-6              # [m]
+# ===============================
+# Derived quantities
+# ===============================
 ω0 = 2π * 2.99792458e8 / λ0
 
 f0_THz = 2.99792458e8 / λ0 / 1e12  # optical carrier frequency [THz]
 
 output_dir = joinpath(@__DIR__, "output_focus")
 mkpath(output_dir)
-# Time grid (example)
-T_window = 2e-12         # [s]
-N = 2^14
+
 dt = T_window / N
 t  = (0:N-1) .* dt .- T_window/2
 
@@ -47,37 +48,8 @@ for j in eachindex(ω)
     ω[j] = (k < N ÷ 2) ? (k * dω) : ((k - N) * dω)
 end
 
-# z grid (example, in mm)
-z_min_mm = 0.0
-z_max_mm = 20.0
-Nz = 2000
 z_mm = collect(range(z_min_mm, z_max_mm, length=Nz+1))
 dz = (z_max_mm - z_min_mm) * 1e-3 / Nz   # [m]
-
-# ===============================
-# Manual toggles
-# ===============================
-# Beam mode: :focus (knife-edge focusing) or :constant (fixed beam diameter)
-const BEAM_MODE = :constant
-# Nonlinear terms
-const ENABLE_SPM = true
-const ENABLE_SELF_STEEPENING = true
-
-# ===============================
-# Beam settings
-# ===============================
-# Focused beam (knife-edge fit)
-focus_w0x_mm = 0.125   # waist diameter [mm]
-focus_z0x_mm = 6.6     # waist position [mm]
-focus_zRx_mm = 0.9     # Rayleigh length [mm]
-focus_w0y_mm = 0.057
-focus_z0y_mm = 6.5
-focus_zRy_mm = 0.5
-focus_waist_is_diameter = true
-
-# Constant beam (diameter at all z)
-const_diam_x_mm = 2
-const_diam_y_mm = 2
 
 beam, beam_label = if BEAM_MODE == :focus
     (
@@ -102,169 +74,70 @@ else
 end
 
 # ===============================
-# Plates (example)
+# Plates (from config)
 # ===============================
 plates = Plates.Plate[]
-push!(plates, Plates.Plate(8.0, 13.0, Material.Si_48um, 0.0, 0.0))  # z in mm
+for pd in plate_defs
+    push!(plates, Plates.Plate(pd.z_start, pd.z_end, pd.material, pd.β2, pd.β3, pd.I_damage))
+end
 
 # ===============================
-# Input pulse (example, power-envelope: |A|^2 = P)
+# Input pulse (power-envelope: |A|^2 = P)
 # ===============================
-τ_fwhm = 100e-15
 τ0 = τ_fwhm / (2sqrt(log(2)))
 G  = exp.(-(t.^2) ./ (2τ0^2))
 
-Ep = 100e-6  # [J] total pulse energy (example)
 P0 = Ep / (0.94 * τ_fwhm)   # Gaussian power pulse
 
 A0 = complex.(sqrt(P0) .* G)
 
-# ===============================
-# Operation limits (production checks)
-# ===============================
-
-const B_WARN_PER_PLATE_RAD  = 1.5π
-const B_LIMIT_PER_PLATE_RAD = 2.0π
-
-# Replace by your measured threshold.
-const I_DAMAGE_WCM2_PER_PLATE = [
-    2.0e11,  # plate 1
-]
-const I_SAFETY_FACTOR = 1.5
-
-# :warn -> print warnings only, :error -> throw when any plate violates limits
-const LIMIT_ACTION = :warn
-
-function plate_index_at_z(z_mm::Float64, plates::Vector{Plates.Plate})
-    for (i, p) in enumerate(plates)
-        if p.z_start_mm <= z_mm <= p.z_end_mm
-            return i
-        end
-    end
-    return nothing
-end
-
-function classify_B(Bi::Float64, warn_rad::Float64, limit_rad::Float64)
-    if Bi > limit_rad
-        return "VIOLATION"
-    elseif Bi > warn_rad
-        return "CAUTION"
-    else
-        return "OK"
-    end
-end
-
-function classify_I(Ipk_Wcm2::Float64, Iallow_Wcm2::Float64)
-    return (Ipk_Wcm2 > Iallow_Wcm2) ? "VIOLATION" : "OK"
-end
-
-function analyze_plate_limits(Itz::Array{Float64,2}, cfg::NLSESolver.NLSEConfig;
-                              B_warn_rad::Float64,
-                              B_limit_rad::Float64,
-                              I_damage_Wcm2_per_plate::Vector{Float64},
-                              safety_factor::Float64)
-    nplates = length(cfg.plates)
-    if length(I_damage_Wcm2_per_plate) != nplates
-        error("Length mismatch: I_DAMAGE_WCM2_PER_PLATE has $(length(I_damage_Wcm2_per_plate)) values, but plates has $(nplates).")
-    end
-    B_per_plate = zeros(Float64, nplates)
-    Ipk_per_plate = zeros(Float64, nplates)
-    z_Ipk_mm = fill(NaN, nplates)
-    I_allow_Wcm2_per_plate = I_damage_Wcm2_per_plate ./ safety_factor
-
-    for iz in 1:(length(cfg.z_mm)-1)
-        z_mid_mm = 0.5 * (cfg.z_mm[iz] + cfg.z_mm[iz+1])
-        pidx = plate_index_at_z(z_mid_mm, cfg.plates)
-        if pidx === nothing
-            continue
-        end
-
-        _, _, n2_here = Plates.coeffs_at_z(z_mid_mm, cfg.plates, cfg.beam, cfg.λ0)
-        Aeff_mid = Beam.A_eff(cfg.beam, z_mid_mm)
-        if n2_here == 0.0 || Aeff_mid <= 0.0 || !isfinite(Aeff_mid)
-            continue
-        end
-
-        gamma = n2_here * cfg.ω0 / (NLSESolver.c0 * Aeff_mid)
-        Ppeak = maximum(Itz[:, iz+1]) # |A|^2 = power [W]
-        if !isfinite(gamma) || !isfinite(Ppeak)
-            continue
-        end
-
-        B_per_plate[pidx] += gamma * Ppeak * cfg.dz
-
-        Ipk_Wcm2 = (2.0 * Ppeak / Aeff_mid) / 1e4
-        if Ipk_Wcm2 > Ipk_per_plate[pidx]
-            Ipk_per_plate[pidx] = Ipk_Wcm2
-            z_Ipk_mm[pidx] = z_mid_mm
-        end
-    end
-
-    B_total = sum(B_per_plate)
-    B_status = [classify_B(Bi, B_warn_rad, B_limit_rad) for Bi in B_per_plate]
-    I_status = [classify_I(Ipk_per_plate[i], I_allow_Wcm2_per_plate[i]) for i in 1:nplates]
-    has_violation = any(s -> s == "VIOLATION", B_status) || any(s -> s == "VIOLATION", I_status)
-
-    return (
-        B_per_plate = B_per_plate,
-        Ipk_per_plate = Ipk_per_plate,
-        z_Ipk_mm = z_Ipk_mm,
-        B_total = B_total,
-        B_status = B_status,
-        I_status = I_status,
-        I_allow_Wcm2_per_plate = I_allow_Wcm2_per_plate,
-        has_violation = has_violation
-    )
-end
-
-function compute_B(Itz::Array{Float64,2}, cfg::NLSESolver.NLSEConfig)
-    c0_local = 2.99792458e8
-    Nz = length(cfg.z_mm) - 1
-    B_total = 0.0
-    for iz in 1:Nz
-        z_mid_mm = 0.5 * (cfg.z_mm[iz] + cfg.z_mm[iz+1])
-        _, _, n2_here = Plates.coeffs_at_z(z_mid_mm, cfg.plates, cfg.beam, cfg.λ0)
-        if n2_here == 0.0
-            continue
-        end
-        Aeff_mid = Beam.A_eff(cfg.beam, z_mid_mm)
-        gamma = n2_here * cfg.ω0 / (c0_local * Aeff_mid)
-        Ppeak = maximum(Itz[:, iz+1])
-        if !isfinite(Ppeak) || !isfinite(gamma)
-            continue
-        end
-        B_total += gamma * Ppeak * cfg.dz
-    end
-    return B_total
-end
+include("metrics.jl")
+using .Metrics
 
 # ===============================
 # Solve
 # ===============================
+# Compute initial q-parameters when self-focusing is enabled
+if ENABLE_SELF_FOCUSING && !hasmethod(Beam.initial_q, Tuple{typeof(beam), Float64})
+    error("ENABLE_SELF_FOCUSING=true requires a beam type that implements Beam.initial_q(). " *
+          "Got $(typeof(beam)), which does not support q-parameter computation.")
+end
+
+sf_qx0, sf_qy0 = if ENABLE_SELF_FOCUSING
+    Beam.initial_q(beam, z_min_mm)
+else
+    (ComplexF64(0, 1), ComplexF64(0, 1))
+end
+
 cfg = NLSESolver.NLSEConfig(
     λ0, ω0, t, ω, z_mm, dz, plates, beam;
-    apply_beam_scaling = (BEAM_MODE == :focus),
+    apply_beam_scaling = (BEAM_MODE == :focus && !ENABLE_SELF_FOCUSING),
     enable_dispersion = true,
     enable_spm = ENABLE_SPM,
     enable_self_steepening = ENABLE_SELF_STEEPENING,
+    enable_self_focusing = ENABLE_SELF_FOCUSING,
+    qx0 = sf_qx0,
+    qy0 = sf_qy0,
 )
 
 println("BEAM_MODE = ", BEAM_MODE, " (", beam_label, ")")
 println("ENABLE_SELF_STEEPENING = ", ENABLE_SELF_STEEPENING)
 println("ENABLE_SPM = ", ENABLE_SPM)
+println("ENABLE_SELF_FOCUSING = ", ENABLE_SELF_FOCUSING)
 
-A_end, Itz, Ifz = NLSESolver.propagate!(A0, cfg)
+A_end, Itz, Ifz, beam_hist = NLSESolver.propagate!(A0, cfg)
 
 println("Done. |A_end|^2 peak = ", maximum(abs2.(A_end)))
-B_total = compute_B(Itz, cfg)
+sf_Aeff = ENABLE_SELF_FOCUSING ? beam_hist.Aeff : nothing
+B_total = compute_B(Itz, cfg; Aeff_hist=sf_Aeff)
 @printf("Computed B-integral (total): %.6f rad\n", B_total)
 
 limit_report = analyze_plate_limits(
     Itz, cfg;
     B_warn_rad = B_WARN_PER_PLATE_RAD,
     B_limit_rad = B_LIMIT_PER_PLATE_RAD,
-    I_damage_Wcm2_per_plate = I_DAMAGE_WCM2_PER_PLATE,
-    safety_factor = I_SAFETY_FACTOR
+    safety_factor = I_SAFETY_FACTOR,
+    Aeff_hist = sf_Aeff
 )
 
 println("\n=== Plate Limit Report ===")
@@ -277,7 +150,7 @@ for (i, p) in enumerate(plates)
             i, p.z_start_mm, p.z_end_mm,
             limit_report.B_per_plate[i], limit_report.B_status[i],
             limit_report.Ipk_per_plate[i], limit_report.z_Ipk_mm[i], limit_report.I_status[i],
-            I_DAMAGE_WCM2_PER_PLATE[i], limit_report.I_allow_Wcm2_per_plate[i])
+            p.I_damage_Wcm2, limit_report.I_allow_Wcm2_per_plate[i])
 end
 
 plate_report_csv = joinpath(output_dir, "plate_limit_report.csv")
@@ -296,7 +169,7 @@ open(plate_report_csv, "w") do io
                 limit_report.I_status[i],
                 B_WARN_PER_PLATE_RAD,
                 B_LIMIT_PER_PLATE_RAD,
-                I_DAMAGE_WCM2_PER_PLATE[i],
+                p.I_damage_Wcm2,
                 I_SAFETY_FACTOR,
                 limit_report.I_allow_Wcm2_per_plate[i]
             ), ",")
@@ -314,7 +187,8 @@ open(summary_csv, "w") do io
     println(io, "B_total_from_compute_B_rad,$(B_total)")
     println(io, "B_warn_per_plate_rad,$(B_WARN_PER_PLATE_RAD)")
     println(io, "B_limit_per_plate_rad,$(B_LIMIT_PER_PLATE_RAD)")
-    println(io, "I_damage_Wcm2_per_plate,\"$(join(I_DAMAGE_WCM2_PER_PLATE, ';'))\"")
+    I_damage_vals = [p.I_damage_Wcm2 for p in plates]
+    println(io, "I_damage_Wcm2_per_plate,\"$(join(I_damage_vals, ';'))\"")
     println(io, "safety_factor,$(I_SAFETY_FACTOR)")
     println(io, "I_allow_Wcm2_per_plate,\"$(join(limit_report.I_allow_Wcm2_per_plate, ';'))\"")
     println(io, "has_violation,$(limit_report.has_violation)")
@@ -410,15 +284,16 @@ if ENABLE_PLOTS
     # Beam diameter vs z
     # ===============================
     z_m = z_mm .* 1e-3
-    diam_x_m = [2.0 * Beam.wx(beam, z_here_mm) for z_here_mm in z_mm]
-    diam_y_m = [2.0 * Beam.wy(beam, z_here_mm) for z_here_mm in z_mm]
+    diam_x_m = 2.0 .* beam_hist.wx
+    diam_y_m = 2.0 .* beam_hist.wy
 
+    sf_label = ENABLE_SELF_FOCUSING ? " (self-focusing ON)" : ""
     p_beam = plot(
         z_m,
         diam_x_m,
         xlabel = "Propagation length z [m]",
         ylabel = "Beam diameter [m]",
-        title  = "Beam diameter along z",
+        title  = "Beam diameter along z" * sf_label,
         label  = "2wx",
     )
     plot!(p_beam, z_m, diam_y_m, label = "2wy")
