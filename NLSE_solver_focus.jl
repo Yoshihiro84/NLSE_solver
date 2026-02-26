@@ -276,9 +276,8 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
             Plates.coeffs_at_z(z_mid_mm, cfg.plates, cfg.beam, cfg.λ0)
 
         # Strang (coupled) scheme:
-        # time-linear(dz/2) -> spatial-linear(dz/2) -> nonlinear(dz, with Kerr)
-        # -> spatial-linear(dz/2) -> time-linear(dz/2)
-        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
+        # spatial-linear(dz/2) -> time-linear(dz/2) -> nonlinear(dz, with Kerr)
+        # -> time-linear(dz/2) -> spatial-linear(dz/2)
 
         if cfg.enable_self_focusing
             # Spatial linear half-step (ABCD free-space only).
@@ -290,6 +289,8 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
                       "Beam has collapsed (thin-lens approximation breakdown).")
             end
 
+            A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
+
             # Use the same field/intensity snapshot for both temporal nonlinearity
             # (SPM+SS) and Kerr thin-lens update.
             Ppeak_nl = maximum(abs2.(A))
@@ -299,6 +300,8 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
             qx, qy = beam_kerr_step(qx, qy;
                 dz_nl=cfg.dz, n2_here=n2_here, Ppeak=Ppeak_nl,
                 λ0=cfg.λ0, enable_self_focusing=true)
+
+            A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
 
             # Spatial linear half-step.
             qx, qy = beam_linear_half_step(qx, qy, cfg.dz/2)
@@ -316,9 +319,11 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
                 A .*= sqrt(Aeff_here / Aeff_mid)
             end
             Aeff_mid = Beam.A_eff(cfg.beam, z_mid_mm)
+            A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
             γ_here = (n2_here == 0.0) ? 0.0 : (n2_here * cfg.ω0 / (c0 * Aeff_mid))
             A = nonlinear_step_rk4(A, cfg.dz, γ_here, cfg.ω0, cfg.ω,
                                    cfg.enable_spm, cfg.enable_self_steepening)
+            A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
             if cfg.apply_beam_scaling
                 Aeff_next = Beam.A_eff(cfg.beam, z_next_mm)
                 A .*= sqrt(Aeff_mid / Aeff_next)
@@ -327,8 +332,6 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
             wy_now   = Beam.wy(cfg.beam, z_next_mm)
             Aeff_now = Beam.A_eff(cfg.beam, z_next_mm)
         end
-
-        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
 
         Itz[:, iz+1] .= abs2.(A)
         S = fft(A)
