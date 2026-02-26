@@ -42,6 +42,40 @@ end
     return π * wx * wy, wx, wy
 end
 
+"ABCD linear free-space propagation for half-step (dz/2)"
+@inline function beam_linear_half_step(qx::ComplexF64, qy::ComplexF64, dz_half::Float64)
+    return qx + dz_half, qy + dz_half
+end
+
+"""
+Kerr thin-lens update at a single z-plane (nonlinear full-step coupling point).
+This is intentionally separated from linear free-space propagation so that
+Kerr update can be applied in the same nonlinear sub-step as SPM/SS.
+"""
+function beam_kerr_step(qx::ComplexF64, qy::ComplexF64;
+                        dz_nl::Float64,
+                        n2_here::Float64,
+                        Ppeak::Float64,
+                        λ0::Float64,
+                        enable_self_focusing::Bool)
+    if !(enable_self_focusing && n2_here != 0.0 && Ppeak > 0.0)
+        return qx, qy
+    end
+
+    _Aeff_here, wx_here, wy_here = Aeff_from_q(qx, qy, λ0)
+
+    # On-axis intensity of an elliptic Gaussian beam: I0 = 2P / (pi wx wy)
+    I0 = 2.0 * Ppeak / (π * wx_here * wy_here)
+
+    # Thin-lens strengths from 2nd-order Kerr phase expansion.
+    invfx = 4.0 * n2_here * I0 * dz_nl / (wx_here^2)
+    invfy = 4.0 * n2_here * I0 * dz_nl / (wy_here^2)
+
+    qx_next = 1.0 / (1.0 / qx - invfx)
+    qy_next = 1.0 / (1.0 / qy - invfy)
+    return qx_next, qy_next
+end
+
 """
 Beam half-step: free-propagate dz_half/2, apply Kerr thin-lens, free-propagate dz_half/2.
 When enable_self_focusing=false or n2_here==0, only free propagation is applied.
@@ -241,44 +275,33 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
         β2_here, β3_here, n2_here =
             Plates.coeffs_at_z(z_mid_mm, cfg.plates, cfg.beam, cfg.λ0)
 
+        # Strang (coupled) scheme:
+        # time-linear(dz/2) -> spatial-linear(dz/2) -> nonlinear(dz, with Kerr)
+        # -> spatial-linear(dz/2) -> time-linear(dz/2)
+        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
+
         if cfg.enable_self_focusing
-            # --- Self-focusing path (q-parameter) ---
-            # 1st beam half-step
-            Ppeak1 = maximum(abs2.(A))
-            qx, qy = beam_half_step(qx, qy;
-                dz_half=cfg.dz/2, n2_here=n2_here, Ppeak=Ppeak1,
-                λ0=cfg.λ0, enable_self_focusing=true)
+            # Spatial linear half-step (ABCD free-space only).
+            qx, qy = beam_linear_half_step(qx, qy, cfg.dz/2)
             Aeff_mid, _wx_mid, _wy_mid = Aeff_from_q(qx, qy, cfg.λ0)
             if cfg.aeff_min_m2 > 0.0 && Aeff_mid < cfg.aeff_min_m2
                 error("propagate!: Aeff dropped below minimum guard " *
                       "(Aeff_mid=$(Aeff_mid) m² < aeff_min=$(cfg.aeff_min_m2) m²). " *
                       "Beam has collapsed (thin-lens approximation breakdown).")
             end
-        else
-            # --- Existing beam-scaling path ---
-            if cfg.apply_beam_scaling
-                Aeff_here = Beam.A_eff(cfg.beam, z_here_mm)
-                Aeff_mid  = Beam.A_eff(cfg.beam, z_mid_mm)
-                A .*= sqrt(Aeff_here / Aeff_mid)
-            end
-            Aeff_mid = Beam.A_eff(cfg.beam, z_mid_mm)
-        end
 
-        # gamma from current Aeff (power-envelope form)
-        γ_here = (n2_here == 0.0) ? 0.0 : (n2_here * cfg.ω0 / (c0 * Aeff_mid))
-
-        # Inner NLSE: symmetric split-step (L/2 -> N -> L/2)
-        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
-        A = nonlinear_step_rk4(A, cfg.dz,  γ_here, cfg.ω0, cfg.ω,
-                               cfg.enable_spm, cfg.enable_self_steepening)
-        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
-
-        if cfg.enable_self_focusing
-            # 2nd beam half-step (Ppeak AFTER NLSE step)
-            Ppeak2 = maximum(abs2.(A))
-            qx, qy = beam_half_step(qx, qy;
-                dz_half=cfg.dz/2, n2_here=n2_here, Ppeak=Ppeak2,
+            # Use the same field/intensity snapshot for both temporal nonlinearity
+            # (SPM+SS) and Kerr thin-lens update.
+            Ppeak_nl = maximum(abs2.(A))
+            γ_here = (n2_here == 0.0) ? 0.0 : (n2_here * cfg.ω0 / (c0 * Aeff_mid))
+            A = nonlinear_step_rk4(A, cfg.dz, γ_here, cfg.ω0, cfg.ω,
+                                   cfg.enable_spm, cfg.enable_self_steepening)
+            qx, qy = beam_kerr_step(qx, qy;
+                dz_nl=cfg.dz, n2_here=n2_here, Ppeak=Ppeak_nl,
                 λ0=cfg.λ0, enable_self_focusing=true)
+
+            # Spatial linear half-step.
+            qx, qy = beam_linear_half_step(qx, qy, cfg.dz/2)
             Aeff_now, wx_now, wy_now = Aeff_from_q(qx, qy, cfg.λ0)
             if cfg.aeff_min_m2 > 0.0 && Aeff_now < cfg.aeff_min_m2
                 error("propagate!: Aeff dropped below minimum guard " *
@@ -286,8 +309,17 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
                       "Beam has collapsed (thin-lens approximation breakdown).")
             end
         else
+            # Existing static-beam scaling path, aligned with the same split order.
             if cfg.apply_beam_scaling
+                Aeff_here = Beam.A_eff(cfg.beam, z_here_mm)
                 Aeff_mid  = Beam.A_eff(cfg.beam, z_mid_mm)
+                A .*= sqrt(Aeff_here / Aeff_mid)
+            end
+            Aeff_mid = Beam.A_eff(cfg.beam, z_mid_mm)
+            γ_here = (n2_here == 0.0) ? 0.0 : (n2_here * cfg.ω0 / (c0 * Aeff_mid))
+            A = nonlinear_step_rk4(A, cfg.dz, γ_here, cfg.ω0, cfg.ω,
+                                   cfg.enable_spm, cfg.enable_self_steepening)
+            if cfg.apply_beam_scaling
                 Aeff_next = Beam.A_eff(cfg.beam, z_next_mm)
                 A .*= sqrt(Aeff_mid / Aeff_next)
             end
@@ -295,6 +327,8 @@ function propagate!(A0::Vector{ComplexF64}, cfg::NLSEConfig)
             wy_now   = Beam.wy(cfg.beam, z_next_mm)
             Aeff_now = Beam.A_eff(cfg.beam, z_next_mm)
         end
+
+        A = linear_step(A, cfg.dz/2, β2_here, β3_here, cfg.ω, cfg.enable_dispersion)
 
         Itz[:, iz+1] .= abs2.(A)
         S = fft(A)
