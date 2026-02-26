@@ -4,7 +4,7 @@ using FFTW
 using ..Plates
 using ..Beam
 
-export NLSEConfig, propagate!, w_from_q, Aeff_from_q, beam_half_step
+export NLSEConfig, propagate!, w_from_q, Aeff_from_q
 
 const ε0  = 8.8541878128e-12
 const c0  = 2.99792458e8
@@ -73,41 +73,6 @@ function beam_kerr_step(qx::ComplexF64, qy::ComplexF64;
 
     qx_next = 1.0 / (1.0 / qx - invfx)
     qy_next = 1.0 / (1.0 / qy - invfy)
-    return qx_next, qy_next
-end
-
-"""
-Beam half-step: free-propagate dz_half/2, apply Kerr thin-lens, free-propagate dz_half/2.
-When enable_self_focusing=false or n2_here==0, only free propagation is applied.
-"""
-function beam_half_step(qx::ComplexF64, qy::ComplexF64;
-                        dz_half::Float64,
-                        n2_here::Float64,
-                        Ppeak::Float64,
-                        λ0::Float64,
-                        enable_self_focusing::Bool)
-    # free propagate to mid-plane
-    qx_mid = qx + dz_half / 2
-    qy_mid = qy + dz_half / 2
-
-    # Kerr lens at mid-plane
-    if enable_self_focusing && n2_here != 0.0 && Ppeak > 0.0
-        _Aeff_mid, wx_mid, wy_mid = Aeff_from_q(qx_mid, qy_mid, λ0)
-
-        # on-axis intensity (elliptic Gaussian): I0 = 2P / (π wx wy)
-        I0 = 2.0 * Ppeak / (π * wx_mid * wy_mid)
-
-        # thin-lens strengths from 2nd-order expansion
-        invfx = 4.0 * n2_here * I0 * dz_half / (wx_mid^2)
-        invfy = 4.0 * n2_here * I0 * dz_half / (wy_mid^2)
-
-        qx_mid = 1.0 / (1.0 / qx_mid - invfx)
-        qy_mid = 1.0 / (1.0 / qy_mid - invfy)
-    end
-
-    # free propagate to end of half-step
-    qx_next = qx_mid + dz_half / 2
-    qy_next = qy_mid + dz_half / 2
     return qx_next, qy_next
 end
 
